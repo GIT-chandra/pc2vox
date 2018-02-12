@@ -1,8 +1,8 @@
 import time, trimesh
 import numpy as np
 
-FILE = 'bunny-flatfoot.stl'
-DIM = 32
+FILE = 'ModelNet10/bathtub/train/bathtub_0002.off'
+DIM = 64
 EXTENT = 100.0
 CLEARANCE = 5.0 # space between the model and the bounds of grid
 

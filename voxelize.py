@@ -1,7 +1,7 @@
 import time, trimesh, os, pymesh
 import numpy as np
 
-FILE = 'model.obj'
+FILE = 'ModelNet10/bathtub/train/bathtub_0002.off'
 DIM = 64
 EXTENT = 100.0
 CLEARANCE = 2.0 # space between the model and the bounds of grid
@@ -27,6 +27,38 @@ def orientation(p,q,r):
     retVal[np.where(val<0)] = 2
     return retVal
 
+def areCornersIn2(xy_inds,lsegs):
+    p1 = np.array((xy_inds - DIM/2).astype(float)*unit)
+    num_pts = p1.shape[0]
+    p1 = np.tile(p1,(lsegs.shape[0],1))
+    q1 = np.tile(np.array([EXTENT/2.0,EXTENT/2.0]),num_pts*lsegs.shape[0]).reshape((-1,2))
+    # intersectionsSum = np.zeros((num_pts,1))
+    # print(lsegs[:,0,:].shape)
+    # print(num_pts)
+    p2 = np.repeat(lsegs[:,0,:],num_pts, axis = 0).reshape((-1,2))
+    q2 = np.repeat(lsegs[:,1,:],num_pts, axis = 0).reshape((-1,2))
+
+    # print(p1.shape)
+    # print(q1.shape)
+    # print(p2.shape)
+    # print(q2.shape)
+
+    o1 = orientation(p1, q1, p2)
+    o2 = orientation(p1, q1, q2)
+    o3 = orientation(p2, q2, p1)
+    o4 = orientation(p2, q2, q1)
+
+    bool1 = (o1 != o2)* (o3 != o4)
+    bool2 = (o1 == 0)* onSegment(p1, p2, q1).reshape((-1,1))
+    bool3 = (o2 == 0)* onSegment(p1, q2, q1).reshape((-1,1))
+    bool4 = (o3 == 0)* onSegment(p2, p1, q2).reshape((-1,1))
+    bool5 = (o4 == 0)* onSegment(p2, q1, q2).reshape((-1,1))
+
+    intersectionsSum = (bool1 + bool2 + bool3 + bool4 + bool5).astype(int)
+    intersectionsSum = np.sum(intersectionsSum.reshape(-1,num_pts),axis = 0)
+
+    return np.remainder(intersectionsSum,2)
+
 def areCornersIn(xy_inds,lsegs):
     p1 = np.array((xy_inds - DIM/2).astype(float)*unit)
     q1 = np.tile(np.array([EXTENT/2.0,EXTENT/2.0]),p1.shape[0]).reshape((-1,2))
@@ -49,6 +81,7 @@ def areCornersIn(xy_inds,lsegs):
         intersectionsSum += (bool1 + bool2 + bool3 + bool4 + bool5).astype(int)
 
     return np.remainder(intersectionsSum,2)
+
 
 orig_mesh = pymesh.load_mesh(FILE)
 verts = np.array(orig_mesh.vertices)
