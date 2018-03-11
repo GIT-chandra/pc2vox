@@ -2,12 +2,12 @@ import tensorflow as tf
 import numpy as np
 
 TRAIN_FILE_LIST = 'trainFiles.txt'
-TEST_FILE_LIST = 'testFiles.txt'
+EVAL_FILE_LIST = 'evalFilesSmall.txt'
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
 def Convo3d(layer,num_filters):
-    cnv =  tf.layers.conv3d(layer,num_filters,[5,5,5],padding = 'same',activation = tf.nn.relu)
+    cnv =  tf.layers.conv3d(layer,num_filters,[5,5,5],padding = 'same',activation = tf.nn.relu, kernel_initializer = tf.contrib.layers.xavier_initializer())
     return tf.nn.dropout(cnv,0.5)
 
 def upConvo3d(layer,num_filters):
@@ -55,7 +55,6 @@ def model_fn(features,labels,mode):
 
     # deconvolutions
     d1a = upConvo3d(c6b,16) # # [-1,8,8,8,f]
-    # d1a = tf.layers.conv3d_transpose(inputs = c6b,filters = 32,kernel_size = [2,2,2],strides = (2,2,2),activation = tf.nn.relu, )
     dccat1 = tf.concat([c5b,d1a],4)
     d1b = Convo3d(dccat1,32)
 
@@ -77,15 +76,22 @@ def model_fn(features,labels,mode):
 
     logits = tf.layers.conv3d(d5b,2,[5,5,5],padding = 'same')
 
-    # pred = {
-    # "predictions": tf.argmax(input = logits,axis = 4)
-    # }
-    loss = tf.losses.sparse_softmax_cross_entropy(labels,logits)
+    if mode != tf.estimator.ModeKeys.PREDICT:
+        loss = tf.losses.sparse_softmax_cross_entropy(labels,logits)
+    # loss = tf.losses.sparse_softmax_cross_entropy(labels,logits)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001)
+        optimizer = tf.train.AdamOptimizer()
         train_op = optimizer.minimize(loss,global_step=tf.train.get_global_step())
         return tf.estimator.EstimatorSpec(mode=mode, loss=loss, train_op=train_op)
+    else:
+        pred = {"predictions": tf.argmax(input = logits,axis = 4)}
+        if mode == tf.estimator.ModeKeys.EVAL:
+            eval_metric_ops = {
+            "accuracy": tf.metrics.accuracy(labels=labels, predictions=pred["predictions"])}
+            return tf.estimator.EstimatorSpec(mode=mode, loss=loss, eval_metric_ops=eval_metric_ops)
+        if mode == tf.estimator.ModeKeys.PREDICT:
+            return tf.estimator.EstimatorSpec(mode=mode, predictions=pred)
 
 class IteratorInitializerHook(tf.train.SessionRunHook):
     def __init__(self):
@@ -95,7 +101,7 @@ class IteratorInitializerHook(tf.train.SessionRunHook):
     def after_create_session(self, session, coord):
         self.iterator_initializer_func(session)
 
-def sample_gen():
+def train_sample_gen():
     with open(TRAIN_FILE_LIST,'r') as f:
         trainFiles = np.array(f.read().split('\n')[:-1])
     num_files = trainFiles.shape[0]
@@ -135,7 +141,7 @@ def get_train_inputs(batch_size):
     def train_inputs():
         with tf.name_scope('Training_data'):
             dataset = tf.data.Dataset.from_generator(
-            generator = sample_gen,
+            generator = train_sample_gen,
             output_types = (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.int64),
             output_shapes= ([128,128,128], [64,64,64], [32,32,32], [16,16,16], [8,8,8], [4,4,4], [128,128,128,1]))
 
@@ -150,6 +156,70 @@ def get_train_inputs(batch_size):
             return {'128':inp128, '64':inp64, '32':inp32, '16':inp16, '8':inp8, '4':inp4}, label
     return train_inputs, iterator_initializer_hook
 
+def eval_sample_gen():
+    with open(EVAL_FILE_LIST,'r') as f:
+        evalFiles = np.array(f.read().split('\n')[:-1])
+    num_files = evalFiles.shape[0]
+    evalFiles = evalFiles[np.random.permutation(num_files)]
+
+    count = -1
+    while(1):
+        count += 1
+        if count >= num_files:
+            count = 0
+
+        # preparing the lable file
+        with open(evalFiles[count],'r') as f:
+            '''
+            first 5 values are not voxel indices:
+            refer to https://github.com/topskychen/voxelizer
+            + 1 because voxelization done at dimension - 2; to get padding of 1 all around
+            '''
+            gt_vox = np.array(f.read().replace('\n',' ').split(' ')[5:-1]).reshape((-1,3)).astype(int) + 1
+        labels = np.zeros((128,128,128))
+        labels[gt_vox[:,0],gt_vox[:,1],gt_vox[:,2]] = 1
+
+        # Input file
+        inputFull = np.load(evalFiles[count][:-3] + 'npy', encoding='latin1')
+
+        yield inputFull[0].astype(np.float32), \
+        inputFull[1].astype(np.float32), \
+        inputFull[2].astype(np.float32), \
+        inputFull[3].astype(np.float32), \
+        inputFull[4].astype(np.float32), \
+        inputFull[5].astype(np.float32), \
+        labels.reshape((128,128,128,1)).astype(np.int64)
+
+def get_eval_inputs(batch_size):
+    iterator_initializer_hook = IteratorInitializerHook()
+
+    def eval_inputs():
+        with tf.name_scope('Evaluation_data'):
+            dataset = tf.data.Dataset.from_generator(
+            generator = eval_sample_gen,
+            output_types = (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.int64),
+            output_shapes= ([128,128,128], [64,64,64], [32,32,32], [16,16,16], [8,8,8], [4,4,4], [128,128,128,1]))
+
+            dataset = dataset.repeat(None)
+            dataset = dataset.batch(batch_size)
+
+            iterator = dataset.make_initializable_iterator()
+            inp128, inp64, inp32, inp16, inp8, inp4, label = iterator.get_next()
+            iterator_initializer_hook.iterator_initializer_func = \
+                lambda sess: sess.run(
+                    iterator.initializer)
+            return {'128':inp128, '64':inp64, '32':inp32, '16':inp16, '8':inp8, '4':inp4}, label
+    return eval_inputs, iterator_initializer_hook
+
+def pred_inp_fn():
+    inputFull = np.load('ModelNet10/bed/test/bed_0516.npy', encoding='latin1')
+    return {'128':inputFull[0].astype(np.float32), \
+        '64':inputFull[1].astype(np.float32), \
+        '32':inputFull[2].astype(np.float32), \
+        '16':inputFull[3].astype(np.float32), \
+        '8':inputFull[4].astype(np.float32), \
+        '4':inputFull[5].astype(np.float32)}, None
+
 def main(unused_argv):
     mycfg = tf.estimator.RunConfig(model_dir=None,
     tf_random_seed=None,
@@ -160,15 +230,52 @@ def main(unused_argv):
     keep_checkpoint_max=5,
     keep_checkpoint_every_n_hours=10000,
     log_step_count_steps=5)
-    mnist_classifier = tf.estimator.Estimator(
-        model_fn=model_fn, model_dir="./tmp_model", config = mycfg)
 
-    train_input_fn, train_input_hook = get_train_inputs(batch_size=2)
+    est = tf.estimator.Estimator(model_fn=model_fn, model_dir="./tmp_model", config = mycfg)
 
-    mnist_classifier.train(
-        input_fn=train_input_fn,
-        steps=2000,
-        hooks=[train_input_hook])
+    train_input_fn, train_input_hook = get_train_inputs(batch_size = 2)
+    eval_input_fn, eval_input_hook = get_eval_inputs(batch_size = 2)
+
+    train_spec = tf.estimator.TrainSpec(input_fn = train_input_fn,hooks=[train_input_hook])
+
+    eval_spec = tf.estimator.EvalSpec(
+    input_fn = eval_input_fn,
+    hooks=[eval_input_hook],
+    throttle_secs=1200,
+    start_delay_secs=1200
+    )
+
+    # tf.estimator.train_and_evaluate(est, train_spec, eval_spec)
+
+    inputFull = np.load('ModelNet10/bed/test/bed_0516.npy', encoding='latin1')
+    pred_input_fn = tf.estimator.inputs.numpy_input_fn(\
+    x = {'128':inputFull[0].astype(np.float32), \
+        '64':inputFull[1].astype(np.float32), \
+        '32':inputFull[2].astype(np.float32), \
+        '16':inputFull[3].astype(np.float32), \
+        '8':inputFull[4].astype(np.float32), \
+        '4':inputFull[5].astype(np.float32)},
+    y = None,
+    batch_size=1,
+    num_epochs=1,
+    shuffle=False)
+    res = est.predict(input_fn = pred_inp_fn)
+
+    # res = est.predict(input_fn = eval_input_fn,hooks=[eval_input_hook])
+    # print(type(res))
+
+    for r in res:
+        voxx = r['predictions']
+        break
+    np.save('pred.npy',voxx)
+
+    # import matplotlib.pyplot as plt
+    # from mpl_toolkits.mplot3d import Axes3D
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111,projection='3d')
+    # idxs = np.where(voxx != 0)
+    # ax.scatter(idxs[0],idxs[1],idxs[2],c='red')
+    # plt.show()
 
 if __name__ == '__main__':
     tf.app.run()
