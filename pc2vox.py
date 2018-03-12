@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 
 TRAIN_FILE_LIST = 'trainFiles.txt'
-EVAL_FILE_LIST = 'evalFilesSmall.txt'
+EVAL_FILE_LIST = 'evalFiles.txt'
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -49,9 +49,11 @@ def model_fn(features,labels,mode):
     c5b = Convo3d(ccat4,32)
     p5 = Mpool(c5b) # [-1,4,4,4,f]
 
-    c6a = Convo3d(input4,4)
-    ccat5 = tf.concat([c6a,p5],4)
-    c6b = Convo3d(ccat5,64)
+    # c6a = Convo3d(input4,4)
+    # ccat5 = tf.concat([c6a,p5],4)
+    # c6b = Convo3d(ccat5,64)
+    c6a = Convo3d(p5,64)
+    c6b = Convo3d(c6a,64)
 
     # deconvolutions
     d1a = upConvo3d(c6b,16) # # [-1,8,8,8,f]
@@ -74,10 +76,10 @@ def model_fn(features,labels,mode):
     dccat5 = tf.concat([c1b,d5a],4)
     d5b = Convo3d(dccat5,16)
 
-    logits = tf.layers.conv3d(d5b,2,[5,5,5],padding = 'same')
+    outp = tf.layers.conv3d(d5b,2,[5,5,5],padding = 'same', activation = tf.nn.softmax)
 
     if mode != tf.estimator.ModeKeys.PREDICT:
-        loss = tf.losses.sparse_softmax_cross_entropy(labels,logits)
+        loss = tf.losses.sparse_softmax_cross_entropy(labels,outp)
     # loss = tf.losses.sparse_softmax_cross_entropy(labels,logits)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
@@ -85,7 +87,7 @@ def model_fn(features,labels,mode):
         train_op = optimizer.minimize(loss,global_step=tf.train.get_global_step())
         return tf.estimator.EstimatorSpec(mode=mode, loss=loss, train_op=train_op)
     else:
-        pred = {"predictions": tf.argmax(input = logits,axis = 4)}
+        pred = {"predictions": tf.argmax(input = outp,axis = 4)}
         if mode == tf.estimator.ModeKeys.EVAL:
             eval_metric_ops = {
             "accuracy": tf.metrics.accuracy(labels=labels, predictions=pred["predictions"])}
@@ -231,12 +233,15 @@ def main(unused_argv):
     keep_checkpoint_every_n_hours=10000,
     log_step_count_steps=5)
 
-    est = tf.estimator.Estimator(model_fn=model_fn, model_dir="./tmp_model", config = mycfg)
+    est = tf.estimator.Estimator(model_fn=model_fn, model_dir="./model_dir", config = mycfg)
 
     train_input_fn, train_input_hook = get_train_inputs(batch_size = 2)
     eval_input_fn, eval_input_hook = get_eval_inputs(batch_size = 2)
 
-    train_spec = tf.estimator.TrainSpec(input_fn = train_input_fn,hooks=[train_input_hook])
+    train_spec = tf.estimator.TrainSpec(
+    input_fn = train_input_fn,
+    hooks=[train_input_hook],
+    max_steps=10000)
 
     eval_spec = tf.estimator.EvalSpec(
     input_fn = eval_input_fn,
@@ -245,29 +250,26 @@ def main(unused_argv):
     start_delay_secs=1200
     )
 
-    # tf.estimator.train_and_evaluate(est, train_spec, eval_spec)
+    tf.estimator.train_and_evaluate(est, train_spec, eval_spec)
 
-    inputFull = np.load('ModelNet10/bed/test/bed_0516.npy', encoding='latin1')
-    pred_input_fn = tf.estimator.inputs.numpy_input_fn(\
-    x = {'128':inputFull[0].astype(np.float32), \
-        '64':inputFull[1].astype(np.float32), \
-        '32':inputFull[2].astype(np.float32), \
-        '16':inputFull[3].astype(np.float32), \
-        '8':inputFull[4].astype(np.float32), \
-        '4':inputFull[5].astype(np.float32)},
-    y = None,
-    batch_size=1,
-    num_epochs=1,
-    shuffle=False)
-    res = est.predict(input_fn = pred_inp_fn)
+    # inputFull = np.load('ModelNet10/bed/test/bed_0516.npy', encoding='latin1')
+    # pred_input_fn = tf.estimator.inputs.numpy_input_fn(\
+    # x = {'128':inputFull[0].astype(np.float32), \
+    #     '64':inputFull[1].astype(np.float32), \
+    #     '32':inputFull[2].astype(np.float32), \
+    #     '16':inputFull[3].astype(np.float32), \
+    #     '8':inputFull[4].astype(np.float32), \
+    #     '4':inputFull[5].astype(np.float32)},
+    # y = None,
+    # batch_size=1,
+    # num_epochs=1,
+    # shuffle=False)
+    # res = est.predict(input_fn = pred_inp_fn)
 
-    # res = est.predict(input_fn = eval_input_fn,hooks=[eval_input_hook])
-    # print(type(res))
-
-    for r in res:
-        voxx = r['predictions']
-        break
-    np.save('pred.npy',voxx)
+    # for r in res:
+    #     voxx = r['predictions']
+    #     break
+    # np.save('pred.npy',voxx)
 
     # import matplotlib.pyplot as plt
     # from mpl_toolkits.mplot3d import Axes3D
