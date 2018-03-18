@@ -3,18 +3,34 @@ import numpy as np
 
 TRAIN_FILE_LIST = 'trainFiles.txt'
 EVAL_FILE_LIST = 'evalFiles.txt'
+NUM_CLASSES = 10
+
+CAT_DICT = {'bathtub':0,
+            'bed':1,
+            'chair':2,
+            'desk':3,
+            'dresser':4,
+            'monitor':5,
+            'night_stand':6,
+            'sofa':7,
+            'table':8,
+            'toilet':9}
+
+CATEGORIES = ['bathtub','bed','chair','desk','dresser','monitor','night_stand','sofa','table','toilet']
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
 def Convo3d(layer,num_filters):
     cnv =  tf.layers.conv3d(layer,num_filters,[5,5,5],padding = 'same',activation = tf.nn.relu, kernel_initializer = tf.contrib.layers.xavier_initializer())
+    return tf.nn.dropout(tf.contrib.layers.batch_norm(cnv),0.5)
     # return tf.nn.dropout(cnv,0.5)
-    return cnv
+    # return cnv
 
 def upConvo3d(layer,num_filters):
     cnv =  tf.layers.conv3d_transpose(layer,num_filters,[2,2,2],strides = (2,2,2),activation = tf.nn.relu, use_bias = False)
+    return tf.nn.dropout(tf.contrib.layers.batch_norm(cnv),0.5)
     # return tf.nn.dropout(cnv,0.5)
-    return cnv
+    # return cnv
 
 def Mpool(layer):
     return tf.layers.max_pooling3d(layer,[2,2,2],2)
@@ -51,54 +67,27 @@ def model_fn(features,labels,mode):
     c5b = Convo3d(ccat4,32)
     p5 = Mpool(c5b) # [-1,4,4,4,f]
 
-    # c6a = Convo3d(input4,4)
-    # ccat5 = tf.concat([c6a,p5],4)
-    # c6b = Convo3d(ccat5,64)
     c6a = Convo3d(p5,64)
     c6b = Convo3d(c6a,64)
 
-    # deconvolutions
-    d1a = upConvo3d(c6b,16) # # [-1,8,8,8,f]
-    dccat1 = tf.concat([c5b,d1a],4)
-    d1b = Convo3d(dccat1,32)
-
-    d2a = upConvo3d(d1b,16) # [-1,16,16,16,f]
-    dccat2 = tf.concat([c4b,d2a],4)
-    d2b = Convo3d(dccat2,32)
-
-    d3a = upConvo3d(d2b,8) # [-1,32,32,32,f]
-    dccat3 = tf.concat([c3b,d3a],4)
-    d3b = Convo3d(dccat3,16)
-
-    d4a = upConvo3d(d3b,8) # [-1,64,64,64,f]
-    dccat4 = tf.concat([c2b,d4a],4)
-    d4b = Convo3d(dccat4,16)
-
-    d5a = upConvo3d(d4b,8) # [-1,128,128,128,f]
-    dccat5 = tf.concat([c1b,d5a],4)
-    d5b = Convo3d(dccat5,16)
-
-    # outp = tf.layers.conv3d(d5b,2,[5,5,5],padding = 'same', activation = tf.nn.softmax)
-    outp = tf.layers.conv3d(d5b,1,[5,5,5],padding = 'same')
+    dense1 = tf.layers.dense(tf.layers.Flatten()(c6b),100,activation=tf.nn.relu)
+    logits = tf.layers.dense(dense1,10)
 
     if mode != tf.estimator.ModeKeys.PREDICT:
-        # loss = tf.losses.sparse_softmax_cross_entropy(labels,outp)
-        loss = tf.losses.mean_squared_error(labels,outp)
-    # loss = tf.losses.sparse_softmax_cross_entropy(labels,logits)
+        loss = tf.losses.sparse_softmax_cross_entropy(labels,logits)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        optimizer = tf.train.AdamOptimizer()
+        optimizer = tf.train.AdamOptimizer(learning_rate=1e-4,beta1=1e-2,beta2=1e-2)
         train_op = optimizer.minimize(loss,global_step=tf.train.get_global_step())
         return tf.estimator.EstimatorSpec(mode=mode, loss=loss, train_op=train_op)
     else:
-        # pred = {"predictions": tf.argmax(input = outp,axis = 4)}
-        pred = {"predictions": tf.cast(tf.greater(outp,0.5*tf.ones([128,128,128,1])), dtype=tf.int64 )}
+        pred = {"predictions": tf.argmax(input = logits,axis = 1)}
         if mode == tf.estimator.ModeKeys.EVAL:
             eval_metric_ops = {
             "accuracy": tf.metrics.accuracy(labels=labels, predictions=pred["predictions"])}
             return tf.estimator.EstimatorSpec(mode=mode, loss=loss, eval_metric_ops=eval_metric_ops)
         if mode == tf.estimator.ModeKeys.PREDICT:
-            return tf.estimator.EstimatorSpec(mode=mode, predictions={'predictions':outp})
+            return tf.estimator.EstimatorSpec(mode=mode, predictions=pred["predictions"])
 
 class IteratorInitializerHook(tf.train.SessionRunHook):
     def __init__(self):
@@ -113,23 +102,19 @@ def train_sample_gen():
         trainFiles = np.array(f.read().split('\n')[:-1])
     num_files = trainFiles.shape[0]
     trainFiles = trainFiles[np.random.permutation(num_files)]
+    trainFiles = trainFiles[np.random.permutation(num_files)]
+    trainFiles = trainFiles[np.random.permutation(num_files)]
 
     count = -1
     while(1):
         count += 1
         if count >= num_files:
             count = 0
+            trainFiles = trainFiles[np.random.permutation(num_files)]
 
         # preparing the lable file
-        with open(trainFiles[count],'r') as f:
-            '''
-            first 5 values are not voxel indices:
-            refer to https://github.com/topskychen/voxelizer
-            + 1 because voxelization done at dimension - 2; to get padding of 1 all around
-            '''
-            gt_vox = np.array(f.read().replace('\n',' ').split(' ')[5:-1]).reshape((-1,3)).astype(int) + 1
-        labels = np.zeros((128,128,128))
-        labels[gt_vox[:,0],gt_vox[:,1],gt_vox[:,2]] = 1
+        cat = trainFiles[count].split('/')[1]
+        labels = CAT_DICT[cat]
 
         # Input file
         inputFull = np.load(trainFiles[count][:-3] + 'npy', encoding='latin1')
@@ -140,7 +125,7 @@ def train_sample_gen():
         inputFull[3].astype(np.float32), \
         inputFull[4].astype(np.float32), \
         inputFull[5].astype(np.float32), \
-        labels.reshape((128,128,128,1)).astype(np.int64)
+        labels
 
 def get_train_inputs(batch_size):
     iterator_initializer_hook = IteratorInitializerHook()
@@ -150,7 +135,7 @@ def get_train_inputs(batch_size):
             dataset = tf.data.Dataset.from_generator(
             generator = train_sample_gen,
             output_types = (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.int64),
-            output_shapes= ([128,128,128], [64,64,64], [32,32,32], [16,16,16], [8,8,8], [4,4,4], [128,128,128,1]))
+            output_shapes= ([128,128,128], [64,64,64], [32,32,32], [16,16,16], [8,8,8], [4,4,4], []))
 
             dataset = dataset.repeat(None)
             dataset = dataset.batch(batch_size)
@@ -174,17 +159,11 @@ def eval_sample_gen():
         count += 1
         if count >= num_files:
             count = 0
+            evalFiles = evalFiles[np.random.permutation(num_files)]
 
         # preparing the lable file
-        with open(evalFiles[count],'r') as f:
-            '''
-            first 5 values are not voxel indices:
-            refer to https://github.com/topskychen/voxelizer
-            + 1 because voxelization done at dimension - 2; to get padding of 1 all around
-            '''
-            gt_vox = np.array(f.read().replace('\n',' ').split(' ')[5:-1]).reshape((-1,3)).astype(int) + 1
-        labels = np.zeros((128,128,128))
-        labels[gt_vox[:,0],gt_vox[:,1],gt_vox[:,2]] = 1
+        cat = evalFiles[count].split('/')[1]
+        labels = CAT_DICT[cat]
 
         # Input file
         inputFull = np.load(evalFiles[count][:-3] + 'npy', encoding='latin1')
@@ -195,7 +174,7 @@ def eval_sample_gen():
         inputFull[3].astype(np.float32), \
         inputFull[4].astype(np.float32), \
         inputFull[5].astype(np.float32), \
-        labels.reshape((128,128,128,1)).astype(np.int64)
+        labels
 
 def get_eval_inputs(batch_size):
     iterator_initializer_hook = IteratorInitializerHook()
@@ -205,7 +184,7 @@ def get_eval_inputs(batch_size):
             dataset = tf.data.Dataset.from_generator(
             generator = eval_sample_gen,
             output_types = (tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.int64),
-            output_shapes= ([128,128,128], [64,64,64], [32,32,32], [16,16,16], [8,8,8], [4,4,4], [128,128,128,1]))
+            output_shapes= ([128,128,128], [64,64,64], [32,32,32], [16,16,16], [8,8,8], [4,4,4], []))
 
             dataset = dataset.repeat(None)
             dataset = dataset.batch(batch_size)
@@ -240,22 +219,22 @@ def main(unused_argv):
 
     est = tf.estimator.Estimator(model_fn=model_fn, model_dir="./model_dir", config = mycfg)
 
-    train_input_fn, train_input_hook = get_train_inputs(batch_size = 2)
-    eval_input_fn, eval_input_hook = get_eval_inputs(batch_size = 2)
+    train_input_fn, train_input_hook = get_train_inputs(batch_size = 3)
+    eval_input_fn, eval_input_hook = get_eval_inputs(batch_size = 3)
 
     train_spec = tf.estimator.TrainSpec(
     input_fn = train_input_fn,
     hooks=[train_input_hook],
-    max_steps=5000)
+    max_steps=30000)
 
     eval_spec = tf.estimator.EvalSpec(
     input_fn = eval_input_fn,
     hooks=[eval_input_hook],
-    throttle_secs=1200,
-    start_delay_secs=1200
+    throttle_secs=600,
+    start_delay_secs=600
     )
 
-    # tf.estimator.train_and_evaluate(est, train_spec, eval_spec)
+    tf.estimator.train_and_evaluate(est, train_spec, eval_spec)
 
     # inputFull = np.load('ModelNet10/bed/test/bed_0516.npy', encoding='latin1')
     # pred_input_fn = tf.estimator.inputs.numpy_input_fn(\
@@ -271,21 +250,21 @@ def main(unused_argv):
     # shuffle=False)
 
 
-    res = est.predict(input_fn = pred_inp_fn)
-    for r in res:
-        voxx = r['predictions']
-        break
-    np.save('pred.npy',voxx)
-
-    voxx = np.load('pred.npy').reshape(128,128,128)
-
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
-    fig = plt.figure()
-    ax = fig.add_subplot(111,projection='3d')
-    idxs = np.where(voxx > 0.5)
-    ax.scatter(idxs[0],idxs[1],idxs[2],c='red')
-    plt.show()
+    # res = est.predict(input_fn = pred_inp_fn)
+    # for r in res:
+    #     voxx = r['predictions']
+    #     break
+    # np.save('pred.npy',voxx)
+    #
+    # voxx = np.load('pred.npy').reshape(128,128,128)
+    #
+    # import matplotlib.pyplot as plt
+    # from mpl_toolkits.mplot3d import Axes3D
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111,projection='3d')
+    # idxs = np.where(voxx > 0.5)
+    # ax.scatter(idxs[0],idxs[1],idxs[2],c='red')
+    # plt.show()
 
 if __name__ == '__main__':
     tf.app.run()
