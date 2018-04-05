@@ -56,7 +56,7 @@ def createGrid(mesh):
     np.zeros((4,4,4))]
 
     for D in range(len(matrices)):
-        unit = EXTENT/float(2**(len(matrices)- D - 1))
+        unit = EXTENT/float(2**(len(matrices)- D + 1))
         inds = (pt_cld/unit).astype(int)
         for i in inds:
             matrices[D][tuple(i)] += 1
@@ -64,16 +64,17 @@ def createGrid(mesh):
 
     return np.array(matrices)
 
-if len(sys.argv)>1:
-    category = sys.argv[1]
+if __name__ == '__main__':
+    if len(sys.argv)>1:
+        category = sys.argv[1]
 
-    allFiles = glob.glob(DATA_ROOT + '/' + category + '/train/*.off')
-    allFiles.extend(glob.glob(DATA_ROOT + '/' + category + '/test/*.off'))
+        allFiles = glob.glob(DATA_ROOT + '/' + category + '/train/*.off')
+        allFiles.extend(glob.glob(DATA_ROOT + '/' + category + '/test/*.off'))
 
-    for model in allFiles:
-        print(model)
-        mesh = pymesh.load_mesh(model)
-        pymesh.save_mesh(model[:-3] + 'stl', mesh)
-        os.system('./voxelizer 126 10 ' + model[:-3] + 'stl ' + model[:-3] + 'vox')
-        # os.system('./getConfigs ' + model[:-3] + 'vox ' + model[:-3] + 'txt')
-        np.save(model[:-3] + 'npy',createGrid(mesh))
+        for model in allFiles:
+            print(model)
+            mesh = pymesh.load_mesh(model)
+            pymesh.save_mesh(model[:-3] + 'stl', mesh)
+            os.system('./voxelizer 126 10 ' + model[:-3] + 'stl ' + model[:-3] + 'vox')
+            # os.system('./getConfigs ' + model[:-3] + 'vox ' + model[:-3] + 'txt')
+            np.save(model[:-3] + 'npy',createGrid(mesh))
